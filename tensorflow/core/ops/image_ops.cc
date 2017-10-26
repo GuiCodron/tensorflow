@@ -735,29 +735,66 @@ image: 3-D with shape `[height, width, channels]`. RGB order
 
 // --------------------------------------------------------------------------
 REGISTER_OP("DecodeGif")
-    .Input("contents: string")
-    .Output("image: uint8")
-    .SetShapeFn([](InferenceContext* c) {
-      ShapeHandle unused;
-      TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
-      c->set_output(0, c->MakeShape({InferenceContext::kUnknownDim,
-                                     InferenceContext::kUnknownDim,
-                                     InferenceContext::kUnknownDim, 3}));
-      return Status::OK();
-    })
-    .Doc(R"doc(
+.Input("contents: string")
+.Output("image: uint8")
+.SetShapeFn([](InferenceContext* c) {
+  ShapeHandle unused;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
+  c->set_output(0, c->MakeShape({InferenceContext::kUnknownDim,
+                                 InferenceContext::kUnknownDim,
+                                 InferenceContext::kUnknownDim, 3}));
+  return Status::OK();
+})
+.Doc(R"doc(
 Decode the first frame of a GIF-encoded image to a uint8 tensor.
 
 GIF with frame or transparency compression are not supported
 convert animated GIF from compressed to uncompressed by:
 
-    convert $src.gif -coalesce $dst.gif
+convert $src.gif -coalesce $dst.gif
 
 This op also supports decoding JPEGs and PNGs, though it is cleaner to use
 `tf.image.decode_image`.
 
 contents: 0-D.  The GIF-encoded image.
 image: 4-D with shape `[num_frames, height, width, 3]`. RGB order
+)doc");
+REGISTER_OP("DecodePPM")
+    .Input("contents: string")
+    .Attr("dtype: {uint8, uint16} = DT_UINT8")
+    .Output("image: dtype")
+    .SetShapeFn([](InferenceContext* c) {
+      ShapeHandle unused;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
+      c->set_output(0, c->MakeShape({InferenceContext::kUnknownDim,
+                                     InferenceContext::kUnknownDim, 
+                                     3}));
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Decode a PPM file to a uint8 tensor.
+
+contents: 0-D.  The PPM-encoded image.
+image: 3-D with shape `[height, width, 3]`. RGB order
+)doc");
+
+REGISTER_OP("DecodePGM")
+    .Input("contents: string")
+    .Attr("dtype: {uint8, uint16} = DT_UINT8")
+    .Output("image: dtype")
+    .SetShapeFn([](InferenceContext* c) {
+      ShapeHandle unused;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 0, &unused));
+      c->set_output(0, c->MakeShape({InferenceContext::kUnknownDim,
+                                     InferenceContext::kUnknownDim, 
+                                     1}));
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Decode a PGM file to a uint8 tensor.
+
+contents: 0-D.  The PGM-encoded image.
+image: 3-D with shape `[height, width, 1]`. Gray scale image
 )doc");
 
 // --------------------------------------------------------------------------

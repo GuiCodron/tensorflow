@@ -20,6 +20,8 @@ See the @{$python/image} guide.
 
 @@decode_bmp
 @@decode_gif
+@@decode_ppm
+@@decode_pgm
 @@decode_jpeg
 @@decode_and_crop_jpeg
 @@encode_jpeg

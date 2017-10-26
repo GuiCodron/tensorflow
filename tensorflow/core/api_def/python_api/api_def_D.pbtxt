@@ -17,6 +17,18 @@ op {
   }
 }
 op {
+  graph_op_name: "DecodePPM"
+  endpoint {
+    name: "image.decode_ppm"
+  }
+}
+op {
+  graph_op_name: "DecodePGM"
+  endpoint {
+    name: "image.decode_pgm"
+  }
+}
+op {
   graph_op_name: "DecodeJpeg"
   endpoint {
     name: "image.decode_jpeg"

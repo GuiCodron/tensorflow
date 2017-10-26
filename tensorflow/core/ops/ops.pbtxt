@@ -6370,6 +6370,62 @@ op {
   description: "GIF with frame or transparency compression are not supported\nconvert animated GIF from compressed to uncompressed by:\n\n    convert $src.gif -coalesce $dst.gif\n\nThis op also supports decoding JPEGs and PNGs, though it is cleaner to use\n`tf.image.decode_image`."
 }
 op {
+  name: "DecodePPM"
+  input_arg {
+    name: "contents"
+    description: "0-D.  The PPM-encoded image."
+    type: DT_STRING
+  }
+  output_arg {
+    name: "image"
+    description: "3-D with shape `[height, width, 3]`. RGB order"
+    type: dtype
+  }
+  attr {
+    name: "dtype"
+    type: "type"
+    default_value {
+      type: DT_UINT8
+    }
+    allowed_values {
+      list {
+        type: DT_UINT8
+        type: DT_UINT16
+      }
+    }
+  }
+  summary: "Decode a PPM-encoded image to a uint8 or uint16 tensor."
+  description: ""
+}
+op {
+  name: "DecodePGM"
+  input_arg {
+    name: "contents"
+    description: "0-D.  The PGM-encoded image."
+    type: DT_STRING
+  }
+  output_arg {
+    name: "image"
+    description: "3-D with shape `[height, width, 1]`. grayscale image"
+    type: dtype
+  }
+  attr {
+    name: "dtype"
+    type: "type"
+    default_value {
+      type: DT_UINT8
+    }
+    allowed_values {
+      list {
+        type: DT_UINT8
+        type: DT_UINT16
+      }
+    }
+  }
+  summary: "Decode a PGM-encoded image to a uint8 or uint16 tensor."
+  description: ""
+}
+op {
   name: "DecodeJSONExample"
   input_arg {
     name: "json_examples"

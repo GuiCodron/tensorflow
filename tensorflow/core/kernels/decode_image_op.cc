@@ -16,6 +16,7 @@ limitations under the License.
 // See docs in ../ops/image_ops.cc
 
 #include <memory>
+#include <limits>
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -36,6 +37,8 @@ enum FileFormat {
   kPngFormat = 1,
   kJpgFormat = 2,
   kGifFormat = 3,
+  kPPMFormat = 4,
+  kPGMFormat = 5,
 };
 
 // Classify the contents of a file based on starting bytes (the magic number).
@@ -44,6 +47,8 @@ FileFormat ClassifyFileFormat(StringPiece data) {
   if (data.starts_with("\xff\xd8\xff")) return kJpgFormat;
   if (data.starts_with("\x89PNG\r\n\x1a\n")) return kPngFormat;
   if (data.starts_with("\x47\x49\x46\x38")) return kGifFormat;
+  if (data.starts_with("P6")) return kPPMFormat;
+  if (data.starts_with("P5")) return kPGMFormat;
   return kUnknownFormat;
 }
 
@@ -55,12 +60,24 @@ string FileFormatString(FileFormat magic, StringPiece data) {
       return "JPEG";
     case kGifFormat:
       return "GIF";
+    case kPPMFormat:
+      return "PPM";
+    case kPGMFormat:
+      return "PGM";
     default: {
       if (data.empty()) return "empty file";
       return strings::StrCat("unknown format starting with '",
                              str_util::CEscape(data.substr(0, 16)), "'");
     }
   }
+}
+
+void skipComments(StringPiece& input) {
+  StringPiece endLine("\n");
+  while (input[0] == '#') { // skip comments
+    auto endLPos = std::search(input.begin(), input.end(), endLine.begin(), endLine.end());
+    input.remove_prefix(endLPos + endLine.size() - input.begin());
+  }  
 }
 
 // Decode an image (either jpeg, png, or gif).  We use a single op so that
@@ -78,13 +95,19 @@ class DecodeImageOp : public OpKernel {
       format_ = kPngFormat;
     } else if (type_string() == "DecodeGif") {
       format_ = kGifFormat;
+    } else if (type_string() == "DecodePPM") {
+      format_ = kPPMFormat;
+    } else if (type_string() == "DecodePGM") {
+      format_ = kPGMFormat;
     } else {
       OP_REQUIRES_OK(context,
                      errors::InvalidArgument("Bad op type ", type_string()));
     }
 
-    if (format_ == kGifFormat) {
+    if (format_ == kGifFormat || format_ == kPPMFormat) {
       channels_ = 3;
+    }else if (format_ == kPGMFormat) {
+      channels_ = 1;
     } else {
       OP_REQUIRES_OK(context, context->GetAttr("channels", &channels_));
       OP_REQUIRES(
@@ -96,7 +119,7 @@ class DecodeImageOp : public OpKernel {
     flags_.components = channels_;
 
     // In the case of png, we support uint16 output
-    if (format_ == kPngFormat) {
+    if (format_ == kPngFormat || format_ == kPGMFormat || format_ == kPPMFormat) {
       DataType dt;
       OP_REQUIRES_OK(context, context->GetAttr("dtype", &dt));
       OP_REQUIRES(
@@ -156,14 +179,16 @@ class DecodeImageOp : public OpKernel {
     const auto magic = ClassifyFileFormat(input);
     OP_REQUIRES(
         context,
-        magic == kJpgFormat || magic == kPngFormat || magic == kGifFormat,
-        errors::InvalidArgument("Expected image (JPEG, PNG, or GIF), got ",
+        magic == kJpgFormat || magic == kPngFormat || magic == kGifFormat || 
+        magic == kPPMFormat || magic == kPGMFormat,
+        errors::InvalidArgument("Expected image (JPEG, PNG, GIF, PGM or PPM), got ",
                                 FileFormatString(magic, input)));
     OP_REQUIRES(context, input.size() <= std::numeric_limits<int>::max(),
                 errors::InvalidArgument(
                     FileFormatString(magic, input),
                     " contents are too large for int: ", input.size()));
-    OP_REQUIRES(context, magic == kPngFormat || channel_bits_ == 8,
+    OP_REQUIRES(context, magic == kPngFormat || magic == kPPMFormat ||
+                magic == kPngFormat || channel_bits_ == 8,
                 errors::InvalidArgument(FileFormatString(magic, input),
                                         " does not support uint16 output"));
 
@@ -176,6 +201,12 @@ class DecodeImageOp : public OpKernel {
         break;
       case kGifFormat:
         DecodeGif(context, input);
+        break;
+      case kPPMFormat:
+        DecodePixelMap(context, input);
+        break;
+      case kPGMFormat:
+        DecodePixelMap(context, input);
         break;
       default:
         LOG(FATAL) << "Should never get here after check above";
@@ -286,7 +317,7 @@ class DecodeImageOp : public OpKernel {
           errors::InvalidArgument("Invalid PNG data, size ", input.size()));
     }
   }
-
+  
   void DecodeGif(OpKernelContext* context, StringPiece input) {
     OP_REQUIRES(context, channels_ == 0 || channels_ == 3,
                 errors::InvalidArgument("channels must be 0 or 3 for GIF, got ",
@@ -298,7 +329,7 @@ class DecodeImageOp : public OpKernel {
         context,
         gif::Decode(input.data(), input.size(),
                     [=, &output](int num_frames, int width, int height,
-                                 int channels) -> uint8* {
+                                  int channels) -> uint8* {
                       Status status;
                       if (format_ == kGifFormat) {
                         status = context->allocate_output(
@@ -322,7 +353,85 @@ class DecodeImageOp : public OpKernel {
                       return output->flat<uint8>().data();
                     }),
         errors::InvalidArgument("Invalid GIF data, size ", input.size()));
-  }
+    }
+    typedef Eigen::Matrix<uint8, 1, Eigen::Dynamic> vecUint8;
+    typedef Eigen::Matrix<uint16, 1, Eigen::Dynamic> vecUint16;
+    void DecodePixelMap(OpKernelContext* context, StringPiece input) {
+      OP_REQUIRES(context, channels_ == 1 || channels_ == 3,
+                  errors::InvalidArgument("channels must be 1 or 3 for PixelMap, got ",
+                                          channels_));
+      
+      Status status;
+      
+      //read header of PixelMap data
+      StringPiece endLine("\n");
+      auto endLPos = std::search(input.begin(), input.end(), endLine.begin(), endLine.end());
+      input.remove_prefix(endLPos + endLine.size() - input.begin());
+    
+      skipComments(input);
+      
+      // Get width and height
+      auto nPos = input.find(' ');
+      auto width = stoi(input.substr(0, nPos).ToString());
+      input.remove_prefix(nPos + 1);
+      endLPos = std::search(input.begin(), input.end(), endLine.begin(), endLine.end());
+      auto height = stoi(input.substr(0, std::distance(input.begin(), endLPos)).ToString());
+      input.remove_prefix(endLPos + endLine.size() - input.begin());
+    
+      skipComments(input);
+      
+      // Get maximum value of pixels in image 
+      endLPos = std::search(input.begin(), input.end(), endLine.begin(), endLine.end());
+      auto maxVal = stoi(input.substr(0, std::distance(input.begin(), endLPos)).ToString());
+      input.remove_prefix(endLPos + endLine.size() - input.begin());
+      
+      skipComments(input);
+      if (maxVal == 0) {
+        status = errors::InvalidArgument(
+          "Got 0 as maximum value for PPM/PGM decode ",
+          "metadata might be corrupted");
+        
+        if (!status.ok()) {
+          VLOG(1) << status;
+          context->SetStatus(status);
+          return;
+        }
+      }
+    
+      Tensor* output = nullptr;
+      status = context->allocate_output(
+        0,
+        TensorShape({height, width, channels_}),
+        &output);
+      float sizeRatio = (float) input.size() / (float) (height*width*channels_);
+      if (sizeRatio == 2) {
+        memcpy(output->flat<uint16>().data(), input.data(), height*width*channels_*sizeof(uint16));
+        if (maxVal != std::numeric_limits<uint16>::max()) {
+          auto eigenOut = Eigen::Map<vecUint16>(output->flat<uint16>().data(), height*width*channels_);
+          eigenOut /= maxVal;
+          eigenOut *= std::numeric_limits<uint16>::max(); 
+        }
+      } else if (sizeRatio == 1) {
+        memcpy(output->flat<uint8>().data(), input.data(), height*width*channels_*sizeof(uint8));
+        
+        if (maxVal != std::numeric_limits<uint8>::max()) {
+          auto eigenOut = Eigen::Map<vecUint8>(output->flat<uint8>().data(), height*width*channels_);
+          eigenOut /= maxVal;
+          eigenOut *= std::numeric_limits<uint8>::max(); 
+        }
+      } else {
+        status = errors::InvalidArgument(
+          "Input data size mismatched with metadata informations input.size (",
+          input.size(), ") != width*height*channels (", width, "*", height, "*",
+          channels_, "=", height*width*channels_, ") your file data might be",
+          "corrupted");
+        if (!status.ok()) {
+          VLOG(1) << status;
+          context->SetStatus(status);
+          return;
+        }
+      }
+    }
 
  private:
   FileFormat format_;
@@ -334,6 +443,8 @@ class DecodeImageOp : public OpKernel {
 REGISTER_KERNEL_BUILDER(Name("DecodeJpeg").Device(DEVICE_CPU), DecodeImageOp);
 REGISTER_KERNEL_BUILDER(Name("DecodePng").Device(DEVICE_CPU), DecodeImageOp);
 REGISTER_KERNEL_BUILDER(Name("DecodeGif").Device(DEVICE_CPU), DecodeImageOp);
+REGISTER_KERNEL_BUILDER(Name("DecodePPM").Device(DEVICE_CPU), DecodeImageOp);
+REGISTER_KERNEL_BUILDER(Name("DecodePGM").Device(DEVICE_CPU), DecodeImageOp);
 REGISTER_KERNEL_BUILDER(Name("DecodeAndCropJpeg").Device(DEVICE_CPU),
                         DecodeImageOp);
 
