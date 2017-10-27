@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <memory>
 #include <limits>
+#include <algorithm>
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -354,18 +355,35 @@ class DecodeImageOp : public OpKernel {
                     }),
         errors::InvalidArgument("Invalid GIF data, size ", input.size()));
     }
+
+    // Eigen::Matrix used to handle different format of PixelMap 
     typedef Eigen::Matrix<uint8, 1, Eigen::Dynamic> vecUint8;
     typedef Eigen::Matrix<uint16, 1, Eigen::Dynamic> vecUint16;
+
     void DecodePixelMap(OpKernelContext* context, StringPiece input) {
       OP_REQUIRES(context, channels_ == 1 || channels_ == 3,
                   errors::InvalidArgument("channels must be 1 or 3 for PixelMap, got ",
                                           channels_));
-      
       Status status;
-      
+
+      if (format_ != ClassifyFileFormat(input)) {
+        status = errors::InvalidArgument(
+          "File format is ", FileFormatString(ClassifyFileFormat(input), input), 
+          " you tried to decode using ", FileFormatString(format_, input), " format");
+        
+        if (!status.ok()) {
+          VLOG(1) << status;
+          context->SetStatus(status);
+          return;
+        }
+      }
+      /*
       //read header of PixelMap data
       StringPiece endLine("\n");
+      StringPiece spacePiece(" ");
       auto endLPos = std::search(input.begin(), input.end(), endLine.begin(), endLine.end());
+      auto spacePos = std::search(input.begin(), input.end(), spacePiece.begin(), spacePiece.end());
+      
       input.remove_prefix(endLPos + endLine.size() - input.begin());
     
       skipComments(input);
@@ -386,7 +404,7 @@ class DecodeImageOp : public OpKernel {
       input.remove_prefix(endLPos + endLine.size() - input.begin());
       
       skipComments(input);
-      if (maxVal == 0) {
+      if (maxVal <= 0) {
         status = errors::InvalidArgument(
           "Got 0 as maximum value for PPM/PGM decode ",
           "metadata might be corrupted");
@@ -397,7 +415,46 @@ class DecodeImageOp : public OpKernel {
           return;
         }
       }
+      */
+      //read header of PixelMap data
+      auto nPos = input.find('\n');
+      auto sPos = input.find(' ');
+      input.remove_prefix(std::min(nPos, sPos) + 1);
     
+      skipComments(input);
+      
+      // Get width and height
+      nPos = input.find('\n');
+      sPos = input.find(' ');
+      auto width = stoi(input.substr(0, std::min(nPos, sPos)).ToString());
+      input.remove_prefix(std::min(nPos, sPos) + 1);
+      skipComments(input);
+
+      nPos = input.find('\n');
+      sPos = input.find(' ');
+      auto height = stoi(input.substr(0, std::min(nPos, sPos)).ToString());
+      input.remove_prefix(std::min(nPos, sPos) + 1);
+      skipComments(input);
+      
+      // Get maximum value of pixels in image 
+      nPos = input.find('\n');
+      sPos = input.find(' ');
+      auto maxVal = stoi(input.substr(0, std::min(nPos, sPos)).ToString());
+      input.remove_prefix(std::min(nPos, sPos) + 1);
+      skipComments(input);
+
+      if (maxVal <= 0) {
+        status = errors::InvalidArgument(
+          "Got 0 as maximum value for PPM/PGM decode ",
+          "metadata might be corrupted");
+        
+        if (!status.ok()) {
+          VLOG(1) << status;
+          context->SetStatus(status);
+          return;
+        }
+      }
+
       Tensor* output = nullptr;
       status = context->allocate_output(
         0,
